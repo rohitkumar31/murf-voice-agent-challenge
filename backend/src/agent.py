@@ -1,6 +1,5 @@
 import logging
 import json
-from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -14,176 +13,225 @@ from livekit.agents import (
     WorkerOptions,
     cli,
     metrics,
-    tokenize,
-    function_tool,
-    RunContext,
 )
-from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
+from livekit.plugins import silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-WELLNESS_LOG_FILE = Path("wellness_log.json")
+
+# -----------------------------
+# Day 4 – Teach-the-Tutor: content loading
+# -----------------------------
 
 
-class WellnessCompanion(Agent):
+def _load_course_content() -> list[dict]:
     """
-    Day 3 – Health & Wellness Voice Companion
+    Load small course content JSON for the tutor.
 
-    - Supportive, non-clinical daily check-in agent
-    - Asks about mood, energy, stress, and simple goals
-    - Stores each check-in in a JSON file (wellness_log.json)
-    - Uses past data to lightly reference previous check-ins
+    We try a couple of common paths:
+      - <repo_root>/shared-data/day4_tutor_content.json
+      - <backend_root>/shared-data/day4_tutor_content.json
+
+    If nothing is found, we fall back to a small built-in default.
+    """
+    # backend/src/agent.py -> backend
+    backend_dir = Path(__file__).resolve().parents[1]
+    candidate_paths = [
+        backend_dir.parent / "shared-data" / "day4_tutor_content.json",
+        backend_dir / "shared-data" / "day4_tutor_content.json",
+    ]
+
+    for path in candidate_paths:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list) and data:
+                    logger.info(f"Loaded course content from {path}")
+                    return data
+            except Exception as e:
+                logger.warning(f"Failed to read course content from {path}: {e}")
+
+    # Fallback: small inline default so agent still works
+    logger.warning("Falling back to built-in course content.")
+    return [
+        {
+            "id": "variables",
+            "title": "Variables",
+            "summary": "Variables store values in memory so you can reuse or change them later. Each variable has a name and holds a value, like a labelled box. You can assign numbers, text, or other data types to variables and then use those names instead of repeating the values everywhere.",
+            "sample_question": "What is a variable and why is it useful in a program?",
+        },
+        {
+            "id": "loops",
+            "title": "Loops",
+            "summary": "Loops let you repeat an action multiple times without copying the same code. A for loop usually runs a known number of times, while a while loop keeps running as long as a condition stays true.",
+            "sample_question": "Explain the difference between a for loop and a while loop with an example.",
+        },
+        {
+            "id": "conditions",
+            "title": "Conditions",
+            "summary": "Conditions let your code make decisions. Using if, elif, and else, the program can choose different paths based on whether an expression is true or false.",
+            "sample_question": "What is an if-else statement and when would you use it?",
+        },
+    ]
+
+
+COURSE_CONTENT: list[dict] = _load_course_content()
+
+
+def _build_course_block() -> str:
+    """
+    Turn COURSE_CONTENT into a readable block that we can inject into the LLM
+    system prompt so it always teaches only from this mini-course.
+    """
+    lines: list[str] = []
+    for concept in COURSE_CONTENT:
+        cid = concept.get("id", "")
+        title = concept.get("title", "")
+        summary = concept.get("summary", "")
+        q = concept.get("sample_question", "")
+        lines.append(
+            f"- id: {cid}\n"
+            f"  title: {title}\n"
+            f"  summary: {summary}\n"
+            f"  sample_question: {q}"
+        )
+    return "\n".join(lines)
+
+
+BASE_INSTRUCTIONS = """
+You are an ACTIVE RECALL COACH called "Teach-the-Tutor".
+
+Your job is to help the learner understand basic programming concepts by:
+1) Explaining them (learn mode),
+2) Quizzing them (quiz mode),
+3) Asking them to teach the concept back to you (teach_back mode) and
+   giving gentle, qualitative feedback.
+
+VERY IMPORTANT RULES:
+- You ONLY teach from the small course content given below.
+- All examples and questions must stay close to that content.
+- You must always remember and respect the current MODE:
+    * learn      → you explain
+    * quiz       → you ask questions
+    * teach_back → the user explains, you listen and then give feedback
+- The user can switch mode at any time by saying things like:
+    "learn mode", "quiz mode", "teach back", "switch to quiz", etc.
+- When they switch modes:
+    1. Briefly confirm the new mode.
+    2. Continue in that new mode.
+
+COURSE CONTENT (you must follow this closely and not invent new topics):
+{course_block}
+
+--------------------------------
+MODE BEHAVIOR
+--------------------------------
+
+1) LEARN MODE
+   - Explain ONE concept at a time using its "summary".
+   - Use simple language and short explanations.
+   - After explaining, ask a small check question like:
+       "Does this make sense?"
+       "Want a tiny example, or should we move to quiz or teach_back for this concept?"
+
+2) QUIZ MODE
+   - Use the "sample_question" for that concept as a base.
+   - Ask ONE question at a time.
+   - Keep questions short and focused on the concept.
+   - When the user answers:
+       * Say if the answer is roughly correct or what is missing.
+       * Add 1–2 lines of correction or extra intuition.
+       * Then either ask another question OR offer to switch to teach_back.
+
+3) TEACH_BACK MODE
+   - Say something like:
+       "Now explain this concept to me in your own words, like you are teaching a friend."
+   - Let the user speak for a while.
+   - After they explain:
+       * Briefly summarize what they said.
+       * Give qualitative feedback with 1 of 3 levels:
+           - "Strong understanding"
+           - "Okay but needs a bit more clarity"
+           - "Needs more work"
+       * Point out 1–3 things they did well.
+       * Point out 1–3 small improvements or missing pieces.
+   - Then ask if they want:
+       - another teach_back on the same concept,
+       - to switch to quiz,
+       - or to learn a new concept.
+
+--------------------------------
+MODE SWITCHING
+--------------------------------
+- If the user clearly asks to change mode (e.g., "quiz karo", "teach_back mode on",
+  "ab learn mode"), then:
+    * Confirm: "Okay, switching to QUIZ mode for <concept>."
+    * Immediately behave according to that mode.
+
+--------------------------------
+CONCEPT CHOOSING
+--------------------------------
+- The user can say things like:
+    "variables padhna hai", "loops sikhao", "conditions pe quiz karo".
+- Map this to the closest concept id from:
+    - variables
+    - loops
+    - conditions
+- Always confirm:
+    "Great, we'll work on <title> (id: <id>)."
+
+--------------------------------
+MASTERY (internal sense)
+--------------------------------
+- Internally, based on quiz answers and teach_back quality, think of the learner as:
+    - BEGINNER
+    - INTERMEDIATE
+    - CONFIDENT
+- You do NOT need to show a numeric score.
+- Use this only to adjust difficulty of questions and explanations.
+
+--------------------------------
+STYLE
+--------------------------------
+- Friendly, encouraging, patient.
+- Short, clear paragraphs (good for voice).
+- Use explicit instructions like:
+    "Now, answer this question:"
+    "Now, explain in your own words:"
+    "Say 'switch to quiz mode' if you want me to quiz you."
+
+--------------------------------
+SESSION START (VERY IMPORTANT)
+--------------------------------
+At the beginning of the conversation you MUST:
+1) Briefly introduce yourself as an active recall coach.
+2) Mention the three modes: learn, quiz, teach_back.
+3) List available concepts by id and title (from the course content).
+4) Ask the user:
+     a) Which concept they want to start with.
+     b) Which mode they want to start in.
+"""
+
+
+def build_instructions() -> str:
+    """Inject the course content block into the base instructions."""
+    course_block = _build_course_block()
+    return BASE_INSTRUCTIONS.format(course_block=course_block)
+
+
+class TeachTheTutor(Agent):
+    """
+    Day 4 – Teach-the-Tutor: Active Recall Coach
     """
 
     def __init__(self) -> None:
         super().__init__(
-            instructions=(
-                "You are a calm, supportive health and wellness voice companion.\n"
-                "You are NOT a doctor, therapist, or clinician.\n"
-                "You must NOT give medical, diagnostic, or treatment advice.\n\n"
-                "Your main job is to do a short daily check-in with the user.\n"
-                "Follow this structure:\n\n"
-                "1) If possible, briefly recall previous check-ins.\n"
-                "   - You may call the `get_last_checkin` tool at the start of a session\n"
-                "     to see the previous entry (if any).\n"
-                "   - Use it to say one small, grounded reference like:\n"
-                "     'Last time you mentioned feeling low energy. How is it today?'\n\n"
-                "2) Ask about MOOD and ENERGY:\n"
-                "   - Examples: 'How are you feeling today?',\n"
-                "               'What is your energy like right now?',\n"
-                "               'Is anything stressing you out at the moment?'\n"
-                "   - Let them describe things in their own words.\n"
-                "   - Keep your tone gentle, non-judgmental, and grounded.\n"
-                "   - Do NOT label, diagnose, or mention disorders or illnesses.\n\n"
-                "3) Ask about INTENTIONS / GOALS for today:\n"
-                "   - Ask for 1–3 simple things they want to do today.\n"
-                "   - Include both tasks and self-care if possible.\n"
-                "   - Examples: 'What are 1–3 things you'd like to get done today?',\n"
-                "               'Is there anything you want to do just for yourself,\n"
-                "                like rest, exercise, or a hobby?'\n\n"
-                "4) Offer SMALL, REALISTIC, NON-MEDICAL suggestions:\n"
-                "   - Break big goals into smaller steps.\n"
-                "   - Encourage short breaks or simple actions\n"
-                "     (e.g., a 5-minute walk, a glass of water, stretching, breathing).\n"
-                "   - Never mention treatment, prescriptions, diagnosis, or illness names.\n\n"
-                "5) Close with a brief RECAP and CONFIRMATION:\n"
-                "   - Summarize today's mood in 1 short phrase.\n"
-                "   - List the main 1–3 goals in a clear sentence.\n"
-                "   - Example: 'So today you are feeling a bit tired but motivated,\n"
-                "              and your goals are X, Y, and one small self-care step Z.\n"
-                "              Does that sound right?'\n\n"
-                "6) IMPORTANT: Logging the check-in\n"
-                "   - Once the conversation feels complete and you have:\n"
-                "       * mood (user's own words or a short phrase),\n"
-                "       * a basic sense of energy level,\n"
-                "       * a list of 1–3 goals/intentions,\n"
-                "       * and you have spoken a recap,\n"
-                "     then you MUST call the `log_wellness_checkin` tool exactly once.\n"
-                "   - Pass the mood, energy, goals (as a list of short strings),\n"
-                "     and a short 1–2 sentence summary of the check-in.\n"
-                "   - After the tool returns, you may say a brief closing line of support.\n\n"
-                "General style:\n"
-                "- Keep responses short, conversational, and grounded.\n"
-                "- No emojis or special formatting.\n"
-                "- Do NOT pretend to be a medical professional.\n"
-                "- Focus on listening, reflecting, and suggesting small, gentle actions.\n"
-            ),
+            instructions=build_instructions(),
         )
-
-    @function_tool
-    async def get_last_checkin(self, context: RunContext) -> dict:
-        """
-        Fetch the most recent wellness check-in from wellness_log.json.
-
-        Use this at the start of a new conversation to lightly reference
-        how the user was doing last time.
-
-        Returns:
-            A dict with the latest entry, or a dict with `available=False`
-            if no log exists yet.
-        """
-        if not WELLNESS_LOG_FILE.exists():
-            return {"available": False, "message": "No previous check-ins found."}
-
-        try:
-            with WELLNESS_LOG_FILE.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            logger.warning(f"Failed to read wellness_log.json: {e}")
-            return {"available": False, "message": "Could not read previous entries."}
-
-        if not isinstance(data, list) or len(data) == 0:
-            return {"available": False, "message": "No previous check-ins found."}
-
-        last_entry = data[-1]
-        last_entry["available"] = True
-        return last_entry
-
-    @function_tool
-    async def log_wellness_checkin(
-        self,
-        context: RunContext,
-        mood: str,
-        energy: str,
-        goals: list[str],
-        summary: str,
-    ) -> str:
-        """
-        Save a wellness check-in to a JSON file.
-
-        Args:
-            mood: User's self-reported mood in their own words or a short phrase.
-            energy: Short description of energy level (e.g., 'low', 'okay', 'high').
-            goals: List of 1–3 small goals or intentions for the day.
-            summary: A short 1–2 sentence summary of the overall check-in.
-
-        Behavior:
-            - Appends an entry to wellness_log.json with timestamp and given fields.
-            - Keeps a human-readable, consistent schema.
-        """
-        logger.info(
-            "log_wellness_checkin called with: "
-            f"mood={mood!r}, energy={energy!r}, goals={goals!r}, summary={summary!r}"
-        )
-
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "mood": mood,
-            "energy": energy,
-            "goals": goals or [],
-            "summary": summary,
-        }
-
-        if WELLNESS_LOG_FILE.exists():
-            try:
-                with WELLNESS_LOG_FILE.open("r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if not isinstance(data, list):
-                    data = []
-            except Exception as e:
-                logger.warning(f"Failed to read wellness_log.json: {e}")
-                data = []
-        else:
-            data = []
-
-        data.append(entry)
-
-        try:
-            with WELLNESS_LOG_FILE.open("w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            logger.info("Wellness check-in saved to wellness_log.json")
-        except Exception as e:
-            logger.error(f"Failed to write wellness_log.json: {e}")
-            return (
-                "I tried to log this check-in, but something went wrong on my side. "
-                "You might want to manually note this somewhere for today."
-            )
-
-        return "Your check-in has been saved successfully."
-
 
 
 def prewarm(proc: JobProcess):
@@ -196,25 +244,22 @@ async def entrypoint(ctx: JobContext):
         "room": ctx.room.name,
     }
 
+    # Pehle room se connect karo
+    await ctx.connect()
+
     # Voice pipeline setup (STT + LLM + TTS + turn detection)
-       # Voice pipeline setup (STT + LLM + TTS + turn detection)
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
         llm=google.LLM(model="gemini-2.5-flash"),
         tts=google.beta.GeminiTTS(
             model="gemini-2.5-flash-preview-tts",
             voice_name="Zephyr",
-            instructions="Speak in a calm, friendly, supportive tone.",
+            instructions="Speak like a friendly programming tutor, clear and encouraging.",
         ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        preemptive_generation=True,
+        preemptive_generation=False,  # quota bachane ke liye
     )
-
-
-
-
-
 
     # Metrics collection (optional but useful)
     usage_collector = metrics.UsageCollector()
@@ -230,17 +275,28 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(log_usage)
 
-    # Start the wellness companion session
+    # Start the Teach-the-Tutor session
     await session.start(
-        agent=WellnessCompanion(),
+        agent=TeachTheTutor(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
 
-    # Connect to the room / user
-    await ctx.connect()
+    # Proactive greeting: ask for concept + mode
+    await session.generate_reply(
+        instructions=(
+            "Greet the learner warmly in one or two short sentences. "
+            "Explain that you are an active recall coach with three modes: "
+            "learn, quiz, and teach_back. "
+            "Mention the available concepts with their ids and titles based on the "
+            "course content. Then ask them: "
+            "1) Which concept they want to start with, and "
+            "2) Which mode they want to begin in. "
+            "Keep it concise and friendly for a voice conversation."
+        )
+    )
 
 
 if __name__ == "__main__":
