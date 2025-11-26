@@ -1,6 +1,7 @@
 import logging
 import json
 from pathlib import Path
+from datetime import datetime
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -13,6 +14,8 @@ from livekit.agents import (
     WorkerOptions,
     cli,
     metrics,
+    function_tool,
+    RunContext,
 )
 from livekit.plugins import silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
@@ -21,27 +24,28 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-
 # -----------------------------
-# Day 4 – Teach-the-Tutor: content loading
+# Day 5 – SDR for an Indian startup (Razorpay-style)
 # -----------------------------
 
+# Lead log file (simple JSON array of leads)
+LEADS_LOG_FILE = Path("sdr_leads_log.json")
 
-def _load_course_content() -> list[dict]:
+
+def _load_company_content() -> dict:
     """
-    Load small course content JSON for the tutor.
+    Load basic company info + FAQ from a JSON file if available.
 
-    We try a couple of common paths:
-      - <repo_root>/shared-data/day4_tutor_content.json
-      - <backend_root>/shared-data/day4_tutor_content.json
+    Expected file path (any one of these):
+      - <repo_root>/shared-data/day5_sdr_content.json
+      - <backend_root>/shared-data/day5_sdr_content.json
 
-    If nothing is found, we fall back to a small built-in default.
+    If file is missing, we fall back to built-in Razorpay-style content.
     """
-    # backend/src/agent.py -> backend
     backend_dir = Path(__file__).resolve().parents[1]
     candidate_paths = [
-        backend_dir.parent / "shared-data" / "day4_tutor_content.json",
-        backend_dir / "shared-data" / "day4_tutor_content.json",
+        backend_dir.parent / "shared-data" / "day5_sdr_content.json",
+        backend_dir / "shared-data" / "day5_sdr_content.json",
     ]
 
     for path in candidate_paths:
@@ -49,189 +53,330 @@ def _load_course_content() -> list[dict]:
             try:
                 with path.open("r", encoding="utf-8") as f:
                     data = json.load(f)
-                if isinstance(data, list) and data:
-                    logger.info(f"Loaded course content from {path}")
+                if isinstance(data, dict):
+                    logger.info(f"Loaded SDR company content from {path}")
                     return data
             except Exception as e:
-                logger.warning(f"Failed to read course content from {path}: {e}")
+                logger.warning(f"Failed to read SDR company content from {path}: {e}")
 
-    # Fallback: small inline default so agent still works
-    logger.warning("Falling back to built-in course content.")
-    return [
-        {
-            "id": "variables",
-            "title": "Variables",
-            "summary": "Variables store values in memory so you can reuse or change them later. Each variable has a name and holds a value, like a labelled box. You can assign numbers, text, or other data types to variables and then use those names instead of repeating the values everywhere.",
-            "sample_question": "What is a variable and why is it useful in a program?",
-        },
-        {
-            "id": "loops",
-            "title": "Loops",
-            "summary": "Loops let you repeat an action multiple times without copying the same code. A for loop usually runs a known number of times, while a while loop keeps running as long as a condition stays true.",
-            "sample_question": "Explain the difference between a for loop and a while loop with an example.",
-        },
-        {
-            "id": "conditions",
-            "title": "Conditions",
-            "summary": "Conditions let your code make decisions. Using if, elif, and else, the program can choose different paths based on whether an expression is true or false.",
-            "sample_question": "What is an if-else statement and when would you use it?",
-        },
-    ]
+    logger.warning("Falling back to built-in SDR company content.")
+
+    # Built-in sample for an Indian fintech SaaS (Razorpay-style)
+    return {
+        "company_name": "Razorpay",
+        "tagline": "Accept online payments and simplify business banking for Indian businesses.",
+        "website": "https://razorpay.com",
+        "product_summary": (
+            "Razorpay is a full-stack payments and business banking platform for Indian businesses. "
+            "You can accept payments online via UPI, cards, netbanking, and wallets; "
+            "set up subscription billing; automate payouts; and manage your business finances in one place."
+        ),
+        "ideal_customers": (
+            "Startups, D2C brands, SaaS companies, online marketplaces, and any Indian business "
+            "that wants to accept online payments or automate payouts."
+        ),
+        "pricing_basics": (
+            "Razorpay typically charges per-transaction fees for the payment gateway with no setup fees "
+            "for standard plans. For enterprise pricing or latest offers, merchants usually contact the sales team."
+        ),
+        "faqs": [
+            {
+                "question": "What does your product do?",
+                "answer": (
+                    "We provide a full-stack payments and business banking platform. "
+                    "You can accept online payments via UPI, cards, netbanking, and wallets, "
+                    "set up subscription billing, automate payouts, and manage business finances in one place."
+                ),
+            },
+            {
+                "question": "Who is this for?",
+                "answer": (
+                    "We are built for Indian businesses of all sizes — from early-stage startups and D2C brands, "
+                    "to large marketplaces and SaaS companies that need reliable payments and payouts."
+                ),
+            },
+            {
+                "question": "Do you have a free tier?",
+                "answer": (
+                    "For the payment gateway, there is generally no setup cost or monthly fee for standard plans — "
+                    "you pay per successful transaction. Some advanced products may have custom or enterprise pricing."
+                ),
+            },
+            {
+                "question": "What are your pricing basics?",
+                "answer": (
+                    "Pricing is usually a simple per-transaction fee for the payment gateway, and custom pricing "
+                    "for advanced products. For exact, up-to-date pricing, it's best to connect with our sales team."
+                ),
+            },
+            {
+                "question": "How do I get started?",
+                "answer": (
+                    "You can sign up online with your business details, complete basic verification, and integrate "
+                    "our APIs, plugins, or no-code payment pages. Our team can guide you if you need help choosing "
+                    "the right product."
+                ),
+            },
+            {
+                "question": "Do you support international payments?",
+                "answer": (
+                    "Yes, many merchants use us to accept international payments, subject to eligibility and "
+                    "compliance checks. The sales team can confirm the best setup for your use case."
+                ),
+            },
+        ],
+    }
 
 
-COURSE_CONTENT: list[dict] = _load_course_content()
+COMPANY_CONTENT: dict = _load_company_content()
 
 
-def _build_course_block() -> str:
+def _build_faq_block() -> str:
     """
-    Turn COURSE_CONTENT into a readable block that we can inject into the LLM
-    system prompt so it always teaches only from this mini-course.
+    Convert company content into a plain-text block we can embed
+    into the system prompt so the agent can answer from it.
     """
+    name = COMPANY_CONTENT.get("company_name", "Our company")
+    tagline = COMPANY_CONTENT.get("tagline", "")
+    website = COMPANY_CONTENT.get("website", "")
+    product_summary = COMPANY_CONTENT.get("product_summary", "")
+    ideal_customers = COMPANY_CONTENT.get("ideal_customers", "")
+    pricing_basics = COMPANY_CONTENT.get("pricing_basics", "")
+    faqs = COMPANY_CONTENT.get("faqs", [])
+
     lines: list[str] = []
-    for concept in COURSE_CONTENT:
-        cid = concept.get("id", "")
-        title = concept.get("title", "")
-        summary = concept.get("summary", "")
-        q = concept.get("sample_question", "")
-        lines.append(
-            f"- id: {cid}\n"
-            f"  title: {title}\n"
-            f"  summary: {summary}\n"
-            f"  sample_question: {q}"
-        )
+    lines.append(f"COMPANY NAME: {name}")
+    if tagline:
+        lines.append(f"TAGLINE: {tagline}")
+    if website:
+        lines.append(f"WEBSITE: {website}")
+    if product_summary:
+        lines.append(f"PRODUCT SUMMARY: {product_summary}")
+    if ideal_customers:
+        lines.append(f"IDEAL CUSTOMERS: {ideal_customers}")
+    if pricing_basics:
+        lines.append(f"PRICING BASICS: {pricing_basics}")
+
+    lines.append("\nFAQ ENTRIES:")
+    for idx, item in enumerate(faqs, start=1):
+        q = item.get("question", "")
+        a = item.get("answer", "")
+        lines.append(f"{idx}. Q: {q}\n   A: {a}")
+
     return "\n".join(lines)
 
 
 BASE_INSTRUCTIONS = """
-You are an ACTIVE RECALL COACH called "Teach-the-Tutor".
+You are a friendly, focused SALES DEVELOPMENT REPRESENTATIVE (SDR) for the company described below.
 
-Your job is to help the learner understand basic programming concepts by:
-1) Explaining them (learn mode),
-2) Quizzing them (quiz mode),
-3) Asking them to teach the concept back to you (teach_back mode) and
-   giving gentle, qualitative feedback.
-
-VERY IMPORTANT RULES:
-- You ONLY teach from the small course content given below.
-- All examples and questions must stay close to that content.
-- You must always remember and respect the current MODE:
-    * learn      → you explain
-    * quiz       → you ask questions
-    * teach_back → the user explains, you listen and then give feedback
-- The user can switch mode at any time by saying things like:
-    "learn mode", "quiz mode", "teach back", "switch to quiz", etc.
-- When they switch modes:
-    1. Briefly confirm the new mode.
-    2. Continue in that new mode.
-
-COURSE CONTENT (you must follow this closely and not invent new topics):
-{course_block}
+Your job:
+1) Greet visitors warmly.
+2) Ask what brought them here and what they are working on.
+3) Keep the conversation focused on understanding the user's needs.
+4) Answer basic product / company / pricing questions from the FAQ content.
+5) Politely and naturally collect LEAD details.
+6) At the end, save a lead summary using the `log_lead` tool.
 
 --------------------------------
-MODE BEHAVIOR
+COMPANY & FAQ (SOURCE OF TRUTH)
 --------------------------------
+You must treat the following company content as your ground truth.
+Do NOT invent features, pricing, or policies beyond what is stated.
+If you are unsure, say that details depend on the latest pricing and the sales team
+can share exact numbers.
 
-1) LEARN MODE
-   - Explain ONE concept at a time using its "summary".
-   - Use simple language and short explanations.
-   - After explaining, ask a small check question like:
-       "Does this make sense?"
-       "Want a tiny example, or should we move to quiz or teach_back for this concept?"
-
-2) QUIZ MODE
-   - Use the "sample_question" for that concept as a base.
-   - Ask ONE question at a time.
-   - Keep questions short and focused on the concept.
-   - When the user answers:
-       * Say if the answer is roughly correct or what is missing.
-       * Add 1–2 lines of correction or extra intuition.
-       * Then either ask another question OR offer to switch to teach_back.
-
-3) TEACH_BACK MODE
-   - Say something like:
-       "Now explain this concept to me in your own words, like you are teaching a friend."
-   - Let the user speak for a while.
-   - After they explain:
-       * Briefly summarize what they said.
-       * Give qualitative feedback with 1 of 3 levels:
-           - "Strong understanding"
-           - "Okay but needs a bit more clarity"
-           - "Needs more work"
-       * Point out 1–3 things they did well.
-       * Point out 1–3 small improvements or missing pieces.
-   - Then ask if they want:
-       - another teach_back on the same concept,
-       - to switch to quiz,
-       - or to learn a new concept.
+{faq_block}
 
 --------------------------------
-MODE SWITCHING
+WHAT YOU CAN ANSWER
 --------------------------------
-- If the user clearly asks to change mode (e.g., "quiz karo", "teach_back mode on",
-  "ab learn mode"), then:
-    * Confirm: "Okay, switching to QUIZ mode for <concept>."
-    * Immediately behave according to that mode.
+From this content, you can answer questions like:
+- "What does your product do?"
+- "Who is this for?"
+- "Do you have a free tier?"
+- "How does pricing work?"
+- "Do you support international payments?"
+- "How do I get started?"
+
+If they ask about something NOT covered in this content:
+- Be honest: say you don't have that exact detail.
+- Offer to connect them with the sales team and continue to collect lead info.
 
 --------------------------------
-CONCEPT CHOOSING
+LEAD CAPTURE – FIELDS TO COLLECT
 --------------------------------
-- The user can say things like:
-    "variables padhna hai", "loops sikhao", "conditions pe quiz karo".
-- Map this to the closest concept id from:
-    - variables
-    - loops
-    - conditions
-- Always confirm:
-    "Great, we'll work on <title> (id: <id>)."
+Over the course of the conversation, you want to gently collect:
+
+- Name
+- Company
+- Email
+- Role
+- Use case (what they want to use this for)
+- Team size
+- Timeline (now / soon / later)
+
+Do NOT interrogate them. Collect these fields naturally by:
+- Asking follow-up questions when they describe their project.
+- Saying things like:
+    "Can I grab your work email so our team can follow up?"
+    "What does your company do?"
+    "Roughly how big is your team?"
+    "When are you hoping to go live — now, soon, or a bit later?"
+
+As you learn these details, keep them in mind. At the end of the call
+you will use them to call the `log_lead` tool.
 
 --------------------------------
-MASTERY (internal sense)
+CALL ENDING & SUMMARY
 --------------------------------
-- Internally, based on quiz answers and teach_back quality, think of the learner as:
-    - BEGINNER
-    - INTERMEDIATE
-    - CONFIDENT
-- You do NOT need to show a numeric score.
-- Use this only to adjust difficulty of questions and explanations.
+Detect when the user is done (they might say:
+  "That's all", "I'm done", "Thanks, this was helpful", etc.)
+
+When you feel the conversation is wrapping up:
+
+1) Give a short verbal summary:
+   - Who they are (name, role, company)
+   - What they want to use the product for (use case)
+   - Rough team size and timeline.
+
+2) Then call the `log_lead` tool EXACTLY ONCE with:
+   - name
+   - company
+   - email
+   - role
+   - use_case
+   - team_size
+   - timeline
+   - summary (1–3 sentence description of the lead and their needs)
+
+If you are missing some fields, it's okay:
+- Politely ask once more, e.g. "Before we wrap up, could I just grab your email?"
+- If they still don't give it, call the tool anyway with what you have
+  and leave missing fields as empty strings.
+
+3) After the tool returns, say a short closing line:
+   - Thank them for their time.
+   - Mention that the team will follow up.
 
 --------------------------------
-STYLE
+CONVERSATION STYLE
 --------------------------------
-- Friendly, encouraging, patient.
-- Short, clear paragraphs (good for voice).
-- Use explicit instructions like:
-    "Now, answer this question:"
-    "Now, explain in your own words:"
-    "Say 'switch to quiz mode' if you want me to quiz you."
+- Warm, concise, and business-casual.
+- Ask one clear question at a time.
+- Keep answers short for voice.
+- Do NOT talk about being an AI or that you are reading from a file.
+- Stay focused on:
+    - Their business,
+    - Their use case,
+    - How this product can help,
+    - Capturing lead info.
 
 --------------------------------
-SESSION START (VERY IMPORTANT)
+IMPORTANT – TOOL USAGE
 --------------------------------
-At the beginning of the conversation you MUST:
-1) Briefly introduce yourself as an active recall coach.
-2) Mention the three modes: learn, quiz, teach_back.
-3) List available concepts by id and title (from the course content).
-4) Ask the user:
-     a) Which concept they want to start with.
-     b) Which mode they want to start in.
+You have access to the `log_lead` tool.
+
+- Use it ONLY near the end of the conversation after you give a verbal summary.
+- Call it exactly once per call.
+- After calling it, you may say a brief goodbye and end the conversation.
 """
 
 
 def build_instructions() -> str:
-    """Inject the course content block into the base instructions."""
-    course_block = _build_course_block()
-    return BASE_INSTRUCTIONS.format(course_block=course_block)
+    """Inject the company FAQ block into the base instructions."""
+    faq_block = _build_faq_block()
+    return BASE_INSTRUCTIONS.format(faq_block=faq_block)
 
 
-class TeachTheTutor(Agent):
+class SdrAgent(Agent):
     """
-    Day 4 – Teach-the-Tutor: Active Recall Coach
+    Day 5 – SDR / FAQ / Lead Capture Agent
     """
 
     def __init__(self) -> None:
-        super().__init__(
-            instructions=build_instructions(),
+        super().__init__(instructions=build_instructions())
+
+    @function_tool
+    async def log_lead(
+        self,
+        context: RunContext,
+        name: str = "",
+        company: str = "",
+        email: str = "",
+        role: str = "",
+        use_case: str = "",
+        team_size: str = "",
+        timeline: str = "",
+        summary: str = "",
+    ) -> str:
+        """
+        Save a qualified lead to a JSON log file.
+
+        Call this exactly once near the end of the conversation, after:
+          - You have given the user a short verbal summary of who they are
+            and what they want,
+          - You have collected as many of these fields as possible:
+
+            - name
+            - company
+            - email
+            - role
+            - use_case
+            - team_size
+            - timeline (e.g. "now", "soon", "later")
+            - summary (1–3 sentence description of their needs)
+
+        Behavior:
+          - Appends a JSON entry to sdr_leads_log.json with timestamp and fields.
+          - If the file does not exist yet, it will be created.
+        """
+        logger.info(
+            "log_lead called with: "
+            f"name={name!r}, company={company!r}, email={email!r}, role={role!r}, "
+            f"use_case={use_case!r}, team_size={team_size!r}, timeline={timeline!r}, "
+            f"summary={summary!r}"
         )
+
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "name": name,
+            "company": company,
+            "email": email,
+            "role": role,
+            "use_case": use_case,
+            "team_size": team_size,
+            "timeline": timeline,
+            "summary": summary,
+        }
+
+        # Load existing log
+        if LEADS_LOG_FILE.exists():
+            try:
+                with LEADS_LOG_FILE.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, list):
+                    data = []
+            except Exception as e:
+                logger.warning(f"Failed to read {LEADS_LOG_FILE}: {e}")
+                data = []
+        else:
+            data = []
+
+        data.append(entry)
+
+        # Write back
+        try:
+            with LEADS_LOG_FILE.open("w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"Lead saved to {LEADS_LOG_FILE}")
+        except Exception as e:
+            logger.error(f"Failed to write {LEADS_LOG_FILE}: {e}")
+            return (
+                "I tried to save this lead, but something went wrong on my side. "
+                "Please make sure the details are captured manually."
+            )
+
+        return "Lead saved successfully."
 
 
 def prewarm(proc: JobProcess):
@@ -254,7 +399,10 @@ async def entrypoint(ctx: JobContext):
         tts=google.beta.GeminiTTS(
             model="gemini-2.5-flash-preview-tts",
             voice_name="Zephyr",
-            instructions="Speak like a friendly programming tutor, clear and encouraging.",
+            instructions=(
+                "Speak like a friendly Indian SDR: clear, concise, and helpful. "
+                "Sound professional but warm."
+            ),
         ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
@@ -275,26 +423,23 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(log_usage)
 
-    # Start the Teach-the-Tutor session
+    # Start the SDR agent session
     await session.start(
-        agent=TeachTheTutor(),
+        agent=SdrAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
 
-    # Proactive greeting: ask for concept + mode
+    # Initial greeting and opening questions
     await session.generate_reply(
         instructions=(
-            "Greet the learner warmly in one or two short sentences. "
-            "Explain that you are an active recall coach with three modes: "
-            "learn, quiz, and teach_back. "
-            "Mention the available concepts with their ids and titles based on the "
-            "course content. Then ask them: "
-            "1) Which concept they want to start with, and "
-            "2) Which mode they want to begin in. "
-            "Keep it concise and friendly for a voice conversation."
+            "Greet the visitor warmly as an SDR for the company. "
+            "Briefly mention what the company does in one sentence, "
+            "then ask: 'What brings you here today?' or "
+            "'Tell me a bit about what you're working on.' "
+            "Keep it short and friendly."
         )
     )
 
