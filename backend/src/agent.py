@@ -25,358 +25,295 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 # -----------------------------
-# Day 5 – SDR for an Indian startup (Razorpay-style)
+# Day 6 – Fraud Alert Voice Agent
 # -----------------------------
 
-# Lead log file (simple JSON array of leads)
-LEADS_LOG_FILE = Path("sdr_leads_log.json")
+FRAUD_DB_FILE = Path("fraud_case.json")
 
 
-def _load_company_content() -> dict:
+def _load_fraud_case() -> dict:
     """
-    Load basic company info + FAQ from a JSON file if available.
+    Load a single fake fraud case from JSON file, or fallback to a built-in case.
 
-    Expected file path (any one of these):
-      - <repo_root>/shared-data/day5_sdr_content.json
-      - <backend_root>/shared-data/day5_sdr_content.json
-
-    If file is missing, we fall back to built-in Razorpay-style content.
+    Structure example:
+    {
+      "userName": "Aarav",
+      "securityIdentifier": "12345",
+      "cardEnding": "4242",
+      "transactionName": "ABC Online Store",
+      "transactionAmount": "₹4,999.00",
+      "transactionTime": "2025-11-20 14:35 IST",
+      "transactionCategory": "e-commerce",
+      "transactionLocation": "Mumbai, India",
+      "transactionSource": "abcstore.example.com",
+      "securityQuestion": "What is the name of your first school?",
+      "securityAnswer": "Green Valley School",
+      "status": "pending_review",
+      "outcomeNote": ""
+    }
     """
-    backend_dir = Path(__file__).resolve().parents[1]
-    candidate_paths = [
-        backend_dir.parent / "shared-data" / "day5_sdr_content.json",
-        backend_dir / "shared-data" / "day5_sdr_content.json",
-    ]
+    if FRAUD_DB_FILE.exists():
+        try:
+            with FRAUD_DB_FILE.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                logger.info(f"Loaded fraud case from {FRAUD_DB_FILE}")
+                return data
+        except Exception as e:
+            logger.warning(f"Failed to read fraud case from {FRAUD_DB_FILE}: {e}")
 
-    for path in candidate_paths:
-        if path.exists():
-            try:
-                with path.open("r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    logger.info(f"Loaded SDR company content from {path}")
-                    return data
-            except Exception as e:
-                logger.warning(f"Failed to read SDR company content from {path}: {e}")
-
-    logger.warning("Falling back to built-in SDR company content.")
-
-    # Built-in sample for an Indian fintech SaaS (Razorpay-style)
+    logger.warning("Falling back to built-in fake fraud case.")
     return {
-        "company_name": "Razorpay",
-        "tagline": "Accept online payments and simplify business banking for Indian businesses.",
-        "website": "https://razorpay.com",
-        "product_summary": (
-            "Razorpay is a full-stack payments and business banking platform for Indian businesses. "
-            "You can accept payments online via UPI, cards, netbanking, and wallets; "
-            "set up subscription billing; automate payouts; and manage your business finances in one place."
-        ),
-        "ideal_customers": (
-            "Startups, D2C brands, SaaS companies, online marketplaces, and any Indian business "
-            "that wants to accept online payments or automate payouts."
-        ),
-        "pricing_basics": (
-            "Razorpay typically charges per-transaction fees for the payment gateway with no setup fees "
-            "for standard plans. For enterprise pricing or latest offers, merchants usually contact the sales team."
-        ),
-        "faqs": [
-            {
-                "question": "What does your product do?",
-                "answer": (
-                    "We provide a full-stack payments and business banking platform. "
-                    "You can accept online payments via UPI, cards, netbanking, and wallets, "
-                    "set up subscription billing, automate payouts, and manage business finances in one place."
-                ),
-            },
-            {
-                "question": "Who is this for?",
-                "answer": (
-                    "We are built for Indian businesses of all sizes — from early-stage startups and D2C brands, "
-                    "to large marketplaces and SaaS companies that need reliable payments and payouts."
-                ),
-            },
-            {
-                "question": "Do you have a free tier?",
-                "answer": (
-                    "For the payment gateway, there is generally no setup cost or monthly fee for standard plans — "
-                    "you pay per successful transaction. Some advanced products may have custom or enterprise pricing."
-                ),
-            },
-            {
-                "question": "What are your pricing basics?",
-                "answer": (
-                    "Pricing is usually a simple per-transaction fee for the payment gateway, and custom pricing "
-                    "for advanced products. For exact, up-to-date pricing, it's best to connect with our sales team."
-                ),
-            },
-            {
-                "question": "How do I get started?",
-                "answer": (
-                    "You can sign up online with your business details, complete basic verification, and integrate "
-                    "our APIs, plugins, or no-code payment pages. Our team can guide you if you need help choosing "
-                    "the right product."
-                ),
-            },
-            {
-                "question": "Do you support international payments?",
-                "answer": (
-                    "Yes, many merchants use us to accept international payments, subject to eligibility and "
-                    "compliance checks. The sales team can confirm the best setup for your use case."
-                ),
-            },
-        ],
+        "userName": "Aarav",
+        "securityIdentifier": "12345",
+        "cardEnding": "4242",
+        "transactionName": "ABC Online Store",
+        "transactionAmount": "₹4,999.00",
+        "transactionTime": "2025-11-20 14:35 IST",
+        "transactionCategory": "e-commerce",
+        "transactionLocation": "Mumbai, India",
+        "transactionSource": "abcstore.example.com",
+        "securityQuestion": "What is the name of your first school?",
+        "securityAnswer": "Green Valley School",
+        "status": "pending_review",
+        "outcomeNote": "",
     }
 
 
-COMPANY_CONTENT: dict = _load_company_content()
+FRAUD_CASE: dict = _load_fraud_case()
 
 
-def _build_faq_block() -> str:
+def _build_case_block() -> str:
     """
-    Convert company content into a plain-text block we can embed
-    into the system prompt so the agent can answer from it.
+    Turn the fraud case into a readable block for the system prompt,
+    so the agent knows the exact fake details.
     """
-    name = COMPANY_CONTENT.get("company_name", "Our company")
-    tagline = COMPANY_CONTENT.get("tagline", "")
-    website = COMPANY_CONTENT.get("website", "")
-    product_summary = COMPANY_CONTENT.get("product_summary", "")
-    ideal_customers = COMPANY_CONTENT.get("ideal_customers", "")
-    pricing_basics = COMPANY_CONTENT.get("pricing_basics", "")
-    faqs = COMPANY_CONTENT.get("faqs", [])
-
-    lines: list[str] = []
-    lines.append(f"COMPANY NAME: {name}")
-    if tagline:
-        lines.append(f"TAGLINE: {tagline}")
-    if website:
-        lines.append(f"WEBSITE: {website}")
-    if product_summary:
-        lines.append(f"PRODUCT SUMMARY: {product_summary}")
-    if ideal_customers:
-        lines.append(f"IDEAL CUSTOMERS: {ideal_customers}")
-    if pricing_basics:
-        lines.append(f"PRICING BASICS: {pricing_basics}")
-
-    lines.append("\nFAQ ENTRIES:")
-    for idx, item in enumerate(faqs, start=1):
-        q = item.get("question", "")
-        a = item.get("answer", "")
-        lines.append(f"{idx}. Q: {q}\n   A: {a}")
-
+    c = FRAUD_CASE
+    lines = [
+        f"Customer (fake) name: {c.get('userName', '')}",
+        f"Security identifier (fake): {c.get('securityIdentifier', '')}",
+        f"Masked card ending: **** {c.get('cardEnding', '')}",
+        f"Suspicious merchant: {c.get('transactionName', '')}",
+        f"Amount: {c.get('transactionAmount', '')}",
+        f"Category: {c.get('transactionCategory', '')}",
+        f"Transaction time: {c.get('transactionTime', '')}",
+        f"Location (fake): {c.get('transactionLocation', '')}",
+        f"Source (website/app): {c.get('transactionSource', '')}",
+        "",
+        f"Security question (fake): {c.get('securityQuestion', '')}",
+        f"Correct security answer (fake, internal only): {c.get('securityAnswer', '')}",
+        f"Current status: {c.get('status', '')}",
+    ]
     return "\n".join(lines)
 
 
 BASE_INSTRUCTIONS = """
-You are a friendly, focused SALES DEVELOPMENT REPRESENTATIVE (SDR) for the company described below.
+You are a FRAUD PREVENTION AGENT for a fictional bank called "SecureBank".
 
-Your job:
-1) Greet visitors warmly.
-2) Ask what brought them here and what they are working on.
-3) Keep the conversation focused on understanding the user's needs.
-4) Answer basic product / company / pricing questions from the FAQ content.
-5) Politely and naturally collect LEAD details.
-6) At the end, save a lead summary using the `log_lead` tool.
+IMPORTANT:
+- This is a DEMO / SANDBOX. All data is fake.
+- Do NOT ask for real card numbers, PINs, passwords, OTPs, or any sensitive credentials.
+- Only use the fake data and security question provided below.
 
---------------------------------
-COMPANY & FAQ (SOURCE OF TRUTH)
---------------------------------
-You must treat the following company content as your ground truth.
-Do NOT invent features, pricing, or policies beyond what is stated.
-If you are unsure, say that details depend on the latest pricing and the sales team
-can share exact numbers.
+-------------------------------
+FAKE FRAUD CASE (INTERNAL DATA)
+-------------------------------
+The current fraud case you are investigating is:
 
-{faq_block}
+{case_block}
 
---------------------------------
-WHAT YOU CAN ANSWER
---------------------------------
-From this content, you can answer questions like:
-- "What does your product do?"
-- "Who is this for?"
-- "Do you have a free tier?"
-- "How does pricing work?"
-- "Do you support international payments?"
-- "How do I get started?"
+Treat this as internal knowledge. You must NOT read the correct security answer directly;
+you should only ASK the question and compare the user's answer logically.
 
-If they ask about something NOT covered in this content:
-- Be honest: say you don't have that exact detail.
-- Offer to connect them with the sales team and continue to collect lead info.
+-------------------------------
+CALL GOAL
+-------------------------------
+When a fraud alert session starts:
 
---------------------------------
-LEAD CAPTURE – FIELDS TO COLLECT
---------------------------------
-Over the course of the conversation, you want to gently collect:
+1) Introduce yourself clearly as SecureBank's fraud prevention team.
+   Example:
+   "Hello, this is the SecureBank fraud prevention team. We detected a suspicious transaction
+    on your card and would like to confirm a few details."
 
-- Name
-- Company
-- Email
-- Role
-- Use case (what they want to use this for)
-- Team size
-- Timeline (now / soon / later)
+2) Explain that:
+   - This is about a single suspicious transaction.
+   - You will ask a basic security question (NON-sensitive).
+   - You will then describe the transaction and ask if it was made by the customer.
 
-Do NOT interrogate them. Collect these fields naturally by:
-- Asking follow-up questions when they describe their project.
-- Saying things like:
-    "Can I grab your work email so our team can follow up?"
-    "What does your company do?"
-    "Roughly how big is your team?"
-    "When are you hoping to go live — now, soon, or a bit later?"
+3) Do NOT ask for:
+   - Full card number
+   - CVV
+   - PIN
+   - Passwords
+   - OTP
+   - Netbanking credentials
+   Only use the fake security question provided.
 
-As you learn these details, keep them in mind. At the end of the call
-you will use them to call the `log_lead` tool.
+-------------------------------
+VERIFICATION FLOW
+-------------------------------
+You MUST perform a basic verification before discussing transaction details:
 
---------------------------------
-CALL ENDING & SUMMARY
---------------------------------
-Detect when the user is done (they might say:
-  "That's all", "I'm done", "Thanks, this was helpful", etc.)
+a) Ask for the customer's FIRST NAME.
+   - Treat it as correct if it matches the internal name approximately:
+       "{user_name}"
+     Small spelling differences are okay.
 
-When you feel the conversation is wrapping up:
+b) Ask the fake security question:
+   "{security_question}"
+   - Treat it as correct ONLY if the user's answer roughly matches the internal answer:
+       "{security_answer}"
 
-1) Give a short verbal summary:
-   - Who they are (name, role, company)
-   - What they want to use the product for (use case)
-   - Rough team size and timeline.
+c) Allow at most 2 attempts at the security question.
+   - If they fail twice or give obviously wrong answers:
+       - Politely say you cannot proceed for security reasons.
+       - Ask no more sensitive details.
+       - Then call the `update_fraud_case` tool with:
+           status = "verification_failed"
+           outcome_note = short explanation, e.g.
+                          "Verification failed; customer could not answer security question."
+       - After the tool returns, briefly say goodbye and end.
 
-2) Then call the `log_lead` tool EXACTLY ONCE with:
-   - name
-   - company
-   - email
-   - role
-   - use_case
-   - team_size
-   - timeline
-   - summary (1–3 sentence description of the lead and their needs)
+-------------------------------
+IF VERIFICATION PASSES
+-------------------------------
+1) Briefly confirm:
+   - "Thank you, your verification is complete."
 
-If you are missing some fields, it's okay:
-- Politely ask once more, e.g. "Before we wrap up, could I just grab your email?"
-- If they still don't give it, call the tool anyway with what you have
-  and leave missing fields as empty strings.
+2) Then read out the suspicious transaction based on the fake case:
+   - Merchant
+   - Amount
+   - Masked card ending (e.g. "ending with 4242")
+   - Approximate time
+   - Location / category
 
-3) After the tool returns, say a short closing line:
-   - Thank them for their time.
-   - Mention that the team will follow up.
+3) Ask clearly:
+   - "Did you make this transaction?" or
+   - "Was this purchase done by you?"
 
---------------------------------
+Interpret answers:
+- If the user confirms → treat as YES (legitimate).
+- If the user denies → treat as NO (fraudulent).
+- If they are unsure, gently help them recall; if still unsure, treat as suspicious.
+
+-------------------------------
+UPDATING THE CASE
+-------------------------------
+At the END of the conversation, after you have:
+
+1) Completed verification (pass or fail),
+2) And, if verified, asked whether the transaction is legitimate,
+
+You MUST:
+
+- Summarize verbally what happened, for example:
+    - "You confirmed that the transaction at ABC Online Store for ₹4,999.00 was legitimate.
+       We will mark this as safe and keep your card active."
+    - OR
+      "You denied the transaction, so we will treat it as fraudulent. In this demo, we will
+       block the card and raise a mock dispute on your behalf."
+
+- Then call the `update_fraud_case` tool EXACTLY ONCE with:
+    * status:
+        - "confirmed_safe"    if user confirmed the transaction
+        - "confirmed_fraud"   if user denied the transaction
+        - "verification_failed" if verification did not pass
+    * outcome_note: 1–3 sentence description of the outcome.
+
+If you are in the verification_failed branch:
+- You must still call `update_fraud_case` with status = "verification_failed".
+
+After the tool returns:
+- Say a short closing line and end the call.
+
+-------------------------------
 CONVERSATION STYLE
---------------------------------
-- Warm, concise, and business-casual.
-- Ask one clear question at a time.
-- Keep answers short for voice.
-- Do NOT talk about being an AI or that you are reading from a file.
-- Stay focused on:
-    - Their business,
-    - Their use case,
-    - How this product can help,
-    - Capturing lead info.
-
---------------------------------
-IMPORTANT – TOOL USAGE
---------------------------------
-You have access to the `log_lead` tool.
-
-- Use it ONLY near the end of the conversation after you give a verbal summary.
-- Call it exactly once per call.
-- After calling it, you may say a brief goodbye and end the conversation.
+-------------------------------
+- Tone: calm, professional, reassuring.
+- Speak slowly and clearly (for voice).
+- Ask one question at a time.
+- If the user says things like "That's all", "I'm done", "Thanks", and you've already handled
+  verification and the yes/no decision, you should move toward closing and updating the case.
+- Do not mention tools, JSON, files, or internal structures.
+- Always remember: this is a demo; all data is fake, for a fictional bank.
 """
 
 
 def build_instructions() -> str:
-    """Inject the company FAQ block into the base instructions."""
-    faq_block = _build_faq_block()
-    return BASE_INSTRUCTIONS.format(faq_block=faq_block)
+    """Inject the fraud case block and key fields into the base instructions."""
+    case_block = _build_case_block()
+    return BASE_INSTRUCTIONS.format(
+        case_block=case_block,
+        user_name=FRAUD_CASE.get("userName", ""),
+        security_question=FRAUD_CASE.get("securityQuestion", ""),
+        security_answer=FRAUD_CASE.get("securityAnswer", ""),
+    )
 
 
-class SdrAgent(Agent):
+class FraudAgent(Agent):
     """
-    Day 5 – SDR / FAQ / Lead Capture Agent
+    Day 6 – Fraud Alert Voice Agent
     """
 
     def __init__(self) -> None:
         super().__init__(instructions=build_instructions())
 
     @function_tool
-    async def log_lead(
+    async def update_fraud_case(
         self,
         context: RunContext,
-        name: str = "",
-        company: str = "",
-        email: str = "",
-        role: str = "",
-        use_case: str = "",
-        team_size: str = "",
-        timeline: str = "",
-        summary: str = "",
+        status: str,
+        outcome_note: str,
     ) -> str:
         """
-        Save a qualified lead to a JSON log file.
+        Update the fraud case status and outcome note in the local JSON "database".
 
-        Call this exactly once near the end of the conversation, after:
-          - You have given the user a short verbal summary of who they are
-            and what they want,
-          - You have collected as many of these fields as possible:
-
-            - name
-            - company
-            - email
-            - role
-            - use_case
-            - team_size
-            - timeline (e.g. "now", "soon", "later")
-            - summary (1–3 sentence description of their needs)
+        Args:
+            status: One of "confirmed_safe", "confirmed_fraud", "verification_failed",
+                    or any other short status string describing the result.
+            outcome_note: 1–3 sentence description of what happened in the call.
 
         Behavior:
-          - Appends a JSON entry to sdr_leads_log.json with timestamp and fields.
-          - If the file does not exist yet, it will be created.
+            - Loads the current fraud_case (from file if exists, otherwise fallback).
+            - Updates the "status" and "outcomeNote" fields.
+            - Adds/updates a "lastUpdated" timestamp.
+            - Writes the updated case back to fraud_case.json.
         """
         logger.info(
-            "log_lead called with: "
-            f"name={name!r}, company={company!r}, email={email!r}, role={role!r}, "
-            f"use_case={use_case!r}, team_size={team_size!r}, timeline={timeline!r}, "
-            f"summary={summary!r}"
+            "update_fraud_case called with: status=%r, outcome_note=%r",
+            status,
+            outcome_note,
         )
 
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "name": name,
-            "company": company,
-            "email": email,
-            "role": role,
-            "use_case": use_case,
-            "team_size": team_size,
-            "timeline": timeline,
-            "summary": summary,
-        }
-
-        # Load existing log
-        if LEADS_LOG_FILE.exists():
+        # Start from existing case (from disk if possible)
+        if FRAUD_DB_FILE.exists():
             try:
-                with LEADS_LOG_FILE.open("r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if not isinstance(data, list):
-                    data = []
+                with FRAUD_DB_FILE.open("r", encoding="utf-8") as f:
+                    current = json.load(f)
+                if not isinstance(current, dict):
+                    current = dict(FRAUD_CASE)
             except Exception as e:
-                logger.warning(f"Failed to read {LEADS_LOG_FILE}: {e}")
-                data = []
+                logger.warning(f"Failed to read {FRAUD_DB_FILE} in update_fraud_case: {e}")
+                current = dict(FRAUD_CASE)
         else:
-            data = []
+            current = dict(FRAUD_CASE)
 
-        data.append(entry)
+        current["status"] = status
+        current["outcomeNote"] = outcome_note
+        current["lastUpdated"] = datetime.now().isoformat()
 
-        # Write back
         try:
-            with LEADS_LOG_FILE.open("w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            logger.info(f"Lead saved to {LEADS_LOG_FILE}")
+            with FRAUD_DB_FILE.open("w", encoding="utf-8") as f:
+                json.dump(current, f, indent=2, ensure_ascii=False)
+            logger.info(f"Fraud case updated and saved to {FRAUD_DB_FILE}")
         except Exception as e:
-            logger.error(f"Failed to write {LEADS_LOG_FILE}: {e}")
+            logger.error(f"Failed to write {FRAUD_DB_FILE}: {e}")
             return (
-                "I tried to save this lead, but something went wrong on my side. "
-                "Please make sure the details are captured manually."
+                "I tried to update the fraud case, but something went wrong on my side. "
+                "Please ensure the outcome is recorded manually."
             )
 
-        return "Lead saved successfully."
+        return "Fraud case updated successfully."
 
 
 def prewarm(proc: JobProcess):
@@ -389,7 +326,7 @@ async def entrypoint(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Pehle room se connect karo
+    # Connect to room first
     await ctx.connect()
 
     # Voice pipeline setup (STT + LLM + TTS + turn detection)
@@ -400,16 +337,16 @@ async def entrypoint(ctx: JobContext):
             model="gemini-2.5-flash-preview-tts",
             voice_name="Zephyr",
             instructions=(
-                "Speak like a friendly Indian SDR: clear, concise, and helpful. "
-                "Sound professional but warm."
+                "Speak like a calm, professional Indian bank representative from the fraud prevention team. "
+                "Be clear, reassuring, and concise."
             ),
         ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        preemptive_generation=False,  # quota bachane ke liye
+        preemptive_generation=False,  # reduce TTS calls to help with quota
     )
 
-    # Metrics collection (optional but useful)
+    # Metrics collection (optional)
     usage_collector = metrics.UsageCollector()
 
     @session.on("metrics_collected")
@@ -423,23 +360,22 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(log_usage)
 
-    # Start the SDR agent session
+    # Start the FraudAgent session
     await session.start(
-        agent=SdrAgent(),
+        agent=FraudAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
 
-    # Initial greeting and opening questions
+    # Proactive opening message
     await session.generate_reply(
         instructions=(
-            "Greet the visitor warmly as an SDR for the company. "
-            "Briefly mention what the company does in one sentence, "
-            "then ask: 'What brings you here today?' or "
-            "'Tell me a bit about what you're working on.' "
-            "Keep it short and friendly."
+            "Introduce yourself as SecureBank's fraud prevention team. "
+            "Explain in 1–2 short sentences that there is a suspicious card transaction "
+            "and you need to verify a few details. "
+            "Then ask politely for the customer's first name to begin verification."
         )
     )
 
