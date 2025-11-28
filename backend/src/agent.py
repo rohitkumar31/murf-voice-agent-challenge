@@ -25,295 +25,538 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 # -----------------------------
-# Day 6 – Fraud Alert Voice Agent
+# Day 7 – Food & Grocery Ordering Voice Agent
 # -----------------------------
 
-FRAUD_DB_FILE = Path("fraud_case.json")
+CATALOG_FILE = Path("shared-data/day7_catalog.json")
+ORDERS_DIR = Path("orders")
+ORDERS_DIR.mkdir(exist_ok=True)
 
 
-def _load_fraud_case() -> dict:
+def _load_catalog() -> list[dict]:
     """
-    Load a single fake fraud case from JSON file, or fallback to a built-in case.
-
-    Structure example:
+    Load catalog from JSON file if present, otherwise fallback to built-in sample.
+    Expected structure per item:
     {
-      "userName": "Aarav",
-      "securityIdentifier": "12345",
-      "cardEnding": "4242",
-      "transactionName": "ABC Online Store",
-      "transactionAmount": "₹4,999.00",
-      "transactionTime": "2025-11-20 14:35 IST",
-      "transactionCategory": "e-commerce",
-      "transactionLocation": "Mumbai, India",
-      "transactionSource": "abcstore.example.com",
-      "securityQuestion": "What is the name of your first school?",
-      "securityAnswer": "Green Valley School",
-      "status": "pending_review",
-      "outcomeNote": ""
+      "id": "bread_whole_wheat",
+      "name": "Whole Wheat Bread",
+      "category": "groceries",
+      "price": 45.0,
+      "unit": "loaf",
+      "brand": "HealthyBite",
+      "tags": ["bread", "sandwich", "vegan"]
     }
     """
-    if FRAUD_DB_FILE.exists():
-        try:
-            with FRAUD_DB_FILE.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                logger.info(f"Loaded fraud case from {FRAUD_DB_FILE}")
-                return data
-        except Exception as e:
-            logger.warning(f"Failed to read fraud case from {FRAUD_DB_FILE}: {e}")
-
-    logger.warning("Falling back to built-in fake fraud case.")
-    return {
-        "userName": "Aarav",
-        "securityIdentifier": "12345",
-        "cardEnding": "4242",
-        "transactionName": "ABC Online Store",
-        "transactionAmount": "₹4,999.00",
-        "transactionTime": "2025-11-20 14:35 IST",
-        "transactionCategory": "e-commerce",
-        "transactionLocation": "Mumbai, India",
-        "transactionSource": "abcstore.example.com",
-        "securityQuestion": "What is the name of your first school?",
-        "securityAnswer": "Green Valley School",
-        "status": "pending_review",
-        "outcomeNote": "",
-    }
-
-
-FRAUD_CASE: dict = _load_fraud_case()
-
-
-def _build_case_block() -> str:
-    """
-    Turn the fraud case into a readable block for the system prompt,
-    so the agent knows the exact fake details.
-    """
-    c = FRAUD_CASE
-    lines = [
-        f"Customer (fake) name: {c.get('userName', '')}",
-        f"Security identifier (fake): {c.get('securityIdentifier', '')}",
-        f"Masked card ending: **** {c.get('cardEnding', '')}",
-        f"Suspicious merchant: {c.get('transactionName', '')}",
-        f"Amount: {c.get('transactionAmount', '')}",
-        f"Category: {c.get('transactionCategory', '')}",
-        f"Transaction time: {c.get('transactionTime', '')}",
-        f"Location (fake): {c.get('transactionLocation', '')}",
-        f"Source (website/app): {c.get('transactionSource', '')}",
-        "",
-        f"Security question (fake): {c.get('securityQuestion', '')}",
-        f"Correct security answer (fake, internal only): {c.get('securityAnswer', '')}",
-        f"Current status: {c.get('status', '')}",
+    # Try project-root/shared-data/day7_catalog.json OR backend/shared-data/day7_catalog.json
+    backend_dir = Path(__file__).resolve().parents[1]
+    candidate_paths = [
+        backend_dir.parent / "shared-data" / "day7_catalog.json",
+        backend_dir / "shared-data" / "day7_catalog.json",
     ]
+
+    for path in candidate_paths:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list) and data:
+                    logger.info(f"Loaded catalog from {path}")
+                    return data
+            except Exception as e:
+                logger.warning(f"Failed to read catalog from {path}: {e}")
+
+    logger.warning("Falling back to built-in catalog for Day 7.")
+    return [
+        {
+            "id": "bread_whole_wheat",
+            "name": "Whole Wheat Bread",
+            "category": "groceries",
+            "price": 45.0,
+            "unit": "loaf",
+            "brand": "HealthyBite",
+            "tags": ["bread", "sandwich", "vegan"],
+        },
+        {
+            "id": "bread_white",
+            "name": "White Bread",
+            "category": "groceries",
+            "price": 40.0,
+            "unit": "loaf",
+            "brand": "SoftLoaf",
+            "tags": ["bread", "sandwich"],
+        },
+        {
+            "id": "eggs_12",
+            "name": "Eggs (12 pcs)",
+            "category": "groceries",
+            "price": 75.0,
+            "unit": "dozen",
+            "brand": "FarmFresh",
+            "tags": ["eggs", "protein"],
+        },
+        {
+            "id": "milk_1l",
+            "name": "Toned Milk 1L",
+            "category": "groceries",
+            "price": 60.0,
+            "unit": "1L",
+            "brand": "DailyDairy",
+            "tags": ["milk"],
+        },
+        {
+            "id": "peanut_butter",
+            "name": "Peanut Butter (Crunchy)",
+            "category": "snacks",
+            "price": 180.0,
+            "unit": "340g jar",
+            "brand": "NuttySpread",
+            "tags": ["peanut butter", "sandwich"],
+        },
+        {
+            "id": "pasta_500g",
+            "name": "Pasta 500g",
+            "category": "groceries",
+            "price": 90.0,
+            "unit": "500g",
+            "brand": "PastaBox",
+            "tags": ["pasta"],
+        },
+        {
+            "id": "pasta_sauce",
+            "name": "Tomato Pasta Sauce",
+            "category": "groceries",
+            "price": 120.0,
+            "unit": "420g jar",
+            "brand": "SaucyChef",
+            "tags": ["pasta", "sauce"],
+        },
+        {
+            "id": "chips_masala",
+            "name": "Masala Potato Chips",
+            "category": "snacks",
+            "price": 30.0,
+            "unit": "70g pack",
+            "brand": "CrunchMate",
+            "tags": ["chips", "snacks"],
+        },
+        {
+            "id": "cola_1_25l",
+            "name": "Cola 1.25L",
+            "category": "beverages",
+            "price": 70.0,
+            "unit": "1.25L bottle",
+            "brand": "FizzUp",
+            "tags": ["cold drink", "cola"],
+        },
+        {
+            "id": "margherita_pizza",
+            "name": "Margherita Pizza (Medium)",
+            "category": "prepared_food",
+            "price": 299.0,
+            "unit": "1 pizza",
+            "brand": "PizzaPal",
+            "tags": ["pizza", "veg"],
+        },
+        {
+            "id": "veg_sandwich",
+            "name": "Veg Sandwich",
+            "category": "prepared_food",
+            "price": 120.0,
+            "unit": "1 sandwich",
+            "brand": "CaféBite",
+            "tags": ["sandwich", "veg"],
+        },
+    ]
+
+
+CATALOG: list[dict] = _load_catalog()
+
+# Simple recipes mapping: dish → list of item IDs
+RECIPES: dict[str, list[str]] = {
+    "peanut butter sandwich": ["bread_whole_wheat", "peanut_butter"],
+    "pb sandwich": ["bread_whole_wheat", "peanut_butter"],
+    "pasta for two": ["pasta_500g", "pasta_sauce"],
+    "simple pasta": ["pasta_500g", "pasta_sauce"],
+}
+
+
+def _build_catalog_block() -> str:
+    """Builds a human-readable catalog block for instructions."""
+    lines: list[str] = ["CATALOG ITEMS:"]
+    for item in CATALOG:
+        lines.append(
+            f"- {item['id']}: {item['name']} "
+            f"(category: {item['category']}, price: ₹{item['price']}, brand: {item.get('brand','')})"
+        )
+    lines.append("\nRECIPES (dish → items):")
+    for dish, ids in RECIPES.items():
+        names = [i["name"] for i in CATALOG if i["id"] in ids]
+        lines.append(f"- {dish}: {', '.join(names)}")
     return "\n".join(lines)
 
 
 BASE_INSTRUCTIONS = """
-You are a FRAUD PREVENTION AGENT for a fictional bank called "SecureBank".
+You are a friendly FOOD & GROCERY ORDERING ASSISTANT for a fictional store called "QuickCart".
 
-IMPORTANT:
-- This is a DEMO / SANDBOX. All data is fake.
-- Do NOT ask for real card numbers, PINs, passwords, OTPs, or any sensitive credentials.
-- Only use the fake data and security question provided below.
+Your job:
+1) Greet the user and explain that you can help order groceries, snacks, and simple meal ingredients.
+2) Understand what they want to order:
+   - Specific items (e.g., "2 loaves of whole wheat bread")
+   - Quantities
+   - Higher-level requests like "ingredients for a peanut butter sandwich" or "pasta for two".
+3) Manage a CART in memory by calling the cart tools.
+4) When the user is done, confirm their order and place it by calling `place_order`.
 
--------------------------------
-FAKE FRAUD CASE (INTERNAL DATA)
--------------------------------
-The current fraud case you are investigating is:
+--------------------------------
+CATALOG (SOURCE OF TRUTH)
+--------------------------------
+You MUST only offer items that exist in this catalog:
 
-{case_block}
+{catalog_block}
 
-Treat this as internal knowledge. You must NOT read the correct security answer directly;
-you should only ASK the question and compare the user's answer logically.
+- If a user asks for something that isn't available, politely suggest the closest match from the catalog.
+- Feel free to ask small clarifying questions (brand, size, quantity) if ambiguous.
 
--------------------------------
-CALL GOAL
--------------------------------
-When a fraud alert session starts:
+--------------------------------
+CART MANAGEMENT (TOOLS)
+--------------------------------
+You have access to these tools:
 
-1) Introduce yourself clearly as SecureBank's fraud prevention team.
-   Example:
-   "Hello, this is the SecureBank fraud prevention team. We detected a suspicious transaction
-    on your card and would like to confirm a few details."
+1) add_item_to_cart(item_id: str, quantity: int, notes: str = "")
+   - Use when the user requests to add an item.
+   - item_id must be one of the IDs in the catalog (e.g., "bread_whole_wheat").
+   - After calling, briefly confirm to the user what was added.
 
-2) Explain that:
-   - This is about a single suspicious transaction.
-   - You will ask a basic security question (NON-sensitive).
-   - You will then describe the transaction and ask if it was made by the customer.
+2) remove_item_from_cart(item_id: str)
+   - Remove that item completely from the cart.
+   - After calling, tell the user what was removed, or if it wasn't in the cart.
 
-3) Do NOT ask for:
-   - Full card number
-   - CVV
-   - PIN
-   - Passwords
-   - OTP
-   - Netbanking credentials
-   Only use the fake security question provided.
+3) update_item_quantity(item_id: str, quantity: int)
+   - Change the quantity for an existing item.
+   - If quantity becomes 0, remove it.
+   - Confirm the new quantity to the user.
 
--------------------------------
-VERIFICATION FLOW
--------------------------------
-You MUST perform a basic verification before discussing transaction details:
+4) list_cart()
+   - Use when the user asks "what's in my cart", "show my order", etc.
+   - Read out items and total value.
 
-a) Ask for the customer's FIRST NAME.
-   - Treat it as correct if it matches the internal name approximately:
-       "{user_name}"
-     Small spelling differences are okay.
+5) add_recipe_to_cart(dish: str, servings: int = 1)
+   - For higher-level requests like "ingredients for a peanut butter sandwich" or "pasta for two":
+   - Map the dish to the recipe list given in the instructions (internal mapping).
+   - For example:
+       * "peanut butter sandwich" → bread + peanut butter
+       * "pasta for two" → pasta + pasta sauce
+   - Add the relevant items to the cart and confirm to the user.
+   - If the dish is unknown, apologize and ask them to order items directly.
 
-b) Ask the fake security question:
-   "{security_question}"
-   - Treat it as correct ONLY if the user's answer roughly matches the internal answer:
-       "{security_answer}"
+6) place_order(customer_name: str, address: str, notes: str = "")
+   - Use when the user says "place my order", "that's all", "I'm done", etc.
+   - Before calling:
+       * Make sure the cart is not empty.
+       * Read a short summary of the final cart and estimated total.
+       * Ask for any minimal details you want (e.g., name and address as free text).
+   - After the tool returns successfully:
+       * Tell the user that the order has been placed and saved.
+       * You can mention a simple order ID from the tool response.
 
-c) Allow at most 2 attempts at the security question.
-   - If they fail twice or give obviously wrong answers:
-       - Politely say you cannot proceed for security reasons.
-       - Ask no more sensitive details.
-       - Then call the `update_fraud_case` tool with:
-           status = "verification_failed"
-           outcome_note = short explanation, e.g.
-                          "Verification failed; customer could not answer security question."
-       - After the tool returns, briefly say goodbye and end.
+--------------------------------
+RECIPES / DISH REQUESTS
+--------------------------------
+If the user says:
+- "I need ingredients for a peanut butter sandwich."
+- "Get me what I need for making pasta for two people."
 
--------------------------------
-IF VERIFICATION PASSES
--------------------------------
-1) Briefly confirm:
-   - "Thank you, your verification is complete."
+You should:
+1) Interpret which recipe is closest (e.g., "peanut butter sandwich", "pasta for two").
+2) Call `add_recipe_to_cart` with that dish name and servings (2 for pasta for two, etc.).
+3) Then tell the user exactly which items you added.
 
-2) Then read out the suspicious transaction based on the fake case:
-   - Merchant
-   - Amount
-   - Masked card ending (e.g. "ending with 4242")
-   - Approximate time
-   - Location / category
-
-3) Ask clearly:
-   - "Did you make this transaction?" or
-   - "Was this purchase done by you?"
-
-Interpret answers:
-- If the user confirms → treat as YES (legitimate).
-- If the user denies → treat as NO (fraudulent).
-- If they are unsure, gently help them recall; if still unsure, treat as suspicious.
-
--------------------------------
-UPDATING THE CASE
--------------------------------
-At the END of the conversation, after you have:
-
-1) Completed verification (pass or fail),
-2) And, if verified, asked whether the transaction is legitimate,
-
-You MUST:
-
-- Summarize verbally what happened, for example:
-    - "You confirmed that the transaction at ABC Online Store for ₹4,999.00 was legitimate.
-       We will mark this as safe and keep your card active."
-    - OR
-      "You denied the transaction, so we will treat it as fraudulent. In this demo, we will
-       block the card and raise a mock dispute on your behalf."
-
-- Then call the `update_fraud_case` tool EXACTLY ONCE with:
-    * status:
-        - "confirmed_safe"    if user confirmed the transaction
-        - "confirmed_fraud"   if user denied the transaction
-        - "verification_failed" if verification did not pass
-    * outcome_note: 1–3 sentence description of the outcome.
-
-If you are in the verification_failed branch:
-- You must still call `update_fraud_case` with status = "verification_failed".
-
-After the tool returns:
-- Say a short closing line and end the call.
-
--------------------------------
+--------------------------------
 CONVERSATION STYLE
--------------------------------
-- Tone: calm, professional, reassuring.
-- Speak slowly and clearly (for voice).
+--------------------------------
+- Tone: warm, simple, and efficient — like a Swiggy Instamart / Blinkit style assistant.
 - Ask one question at a time.
-- If the user says things like "That's all", "I'm done", "Thanks", and you've already handled
-  verification and the yes/no decision, you should move toward closing and updating the case.
-- Do not mention tools, JSON, files, or internal structures.
-- Always remember: this is a demo; all data is fake, for a fictional bank.
+- Always confirm cart changes after using a cart tool.
+- When unclear, ask clarifying questions instead of guessing.
+
+--------------------------------
+ORDER COMPLETION
+--------------------------------
+When the user indicates they are done ordering:
+- Confirm cart contents using `list_cart`.
+- Ask for their name and address in a simple way.
+- Then call `place_order`.
+- After placing the order, give a short summary with:
+    - Number of items,
+    - Order total,
+    - A simple order ID (from the tool response).
+- Then say a polite goodbye.
 """
 
 
 def build_instructions() -> str:
-    """Inject the fraud case block and key fields into the base instructions."""
-    case_block = _build_case_block()
-    return BASE_INSTRUCTIONS.format(
-        case_block=case_block,
-        user_name=FRAUD_CASE.get("userName", ""),
-        security_question=FRAUD_CASE.get("securityQuestion", ""),
-        security_answer=FRAUD_CASE.get("securityAnswer", ""),
-    )
+    catalog_block = _build_catalog_block()
+    return BASE_INSTRUCTIONS.format(catalog_block=catalog_block)
 
 
-class FraudAgent(Agent):
+class GroceryAgent(Agent):
     """
-    Day 6 – Fraud Alert Voice Agent
+    Day 7 – Food & Grocery Ordering Assistant
     """
 
     def __init__(self) -> None:
         super().__init__(instructions=build_instructions())
+        # in-memory cart: list of {item_id, name, unit_price, quantity, notes}
+        self.cart: list[dict] = []
+
+    def _find_item_by_id(self, item_id: str) -> dict | None:
+        for item in CATALOG:
+            if item["id"] == item_id:
+                return item
+        return None
+
+    def _cart_summary(self) -> dict:
+        total = 0.0
+        items_summary = []
+        for entry in self.cart:
+            line_total = entry["unit_price"] * entry["quantity"]
+            total += line_total
+            items_summary.append(
+                {
+                    "item_id": entry["item_id"],
+                    "name": entry["name"],
+                    "quantity": entry["quantity"],
+                    "unit_price": entry["unit_price"],
+                    "line_total": line_total,
+                    "notes": entry.get("notes", ""),
+                }
+            )
+        return {"items": items_summary, "total": total}
 
     @function_tool
-    async def update_fraud_case(
+    async def add_item_to_cart(
         self,
         context: RunContext,
-        status: str,
-        outcome_note: str,
-    ) -> str:
+        item_id: str,
+        quantity: int = 1,
+        notes: str = "",
+    ) -> dict:
         """
-        Update the fraud case status and outcome note in the local JSON "database".
+        Add an item from the catalog to the cart.
 
         Args:
-            status: One of "confirmed_safe", "confirmed_fraud", "verification_failed",
-                    or any other short status string describing the result.
-            outcome_note: 1–3 sentence description of what happened in the call.
+          item_id: Catalog item id (e.g., "bread_whole_wheat").
+          quantity: How many units to add (default 1).
+          notes: Optional free-text notes (e.g., "extra fresh", "if unavailable, skip").
 
-        Behavior:
-            - Loads the current fraud_case (from file if exists, otherwise fallback).
-            - Updates the "status" and "outcomeNote" fields.
-            - Adds/updates a "lastUpdated" timestamp.
-            - Writes the updated case back to fraud_case.json.
+        Returns:
+          A dict with the current cart summary: {items: [...], total: float}.
         """
-        logger.info(
-            "update_fraud_case called with: status=%r, outcome_note=%r",
-            status,
-            outcome_note,
-        )
+        if quantity <= 0:
+            quantity = 1
 
-        # Start from existing case (from disk if possible)
-        if FRAUD_DB_FILE.exists():
-            try:
-                with FRAUD_DB_FILE.open("r", encoding="utf-8") as f:
-                    current = json.load(f)
-                if not isinstance(current, dict):
-                    current = dict(FRAUD_CASE)
-            except Exception as e:
-                logger.warning(f"Failed to read {FRAUD_DB_FILE} in update_fraud_case: {e}")
-                current = dict(FRAUD_CASE)
+        item = self._find_item_by_id(item_id)
+        if not item:
+            return {"ok": False, "message": f"Item id {item_id!r} not found in catalog."}
+
+        # Check if already in cart
+        for entry in self.cart:
+            if entry["item_id"] == item_id:
+                entry["quantity"] += quantity
+                if notes:
+                    entry["notes"] = (entry.get("notes", "") + " " + notes).strip()
+                break
         else:
-            current = dict(FRAUD_CASE)
-
-        current["status"] = status
-        current["outcomeNote"] = outcome_note
-        current["lastUpdated"] = datetime.now().isoformat()
-
-        try:
-            with FRAUD_DB_FILE.open("w", encoding="utf-8") as f:
-                json.dump(current, f, indent=2, ensure_ascii=False)
-            logger.info(f"Fraud case updated and saved to {FRAUD_DB_FILE}")
-        except Exception as e:
-            logger.error(f"Failed to write {FRAUD_DB_FILE}: {e}")
-            return (
-                "I tried to update the fraud case, but something went wrong on my side. "
-                "Please ensure the outcome is recorded manually."
+            self.cart.append(
+                {
+                    "item_id": item_id,
+                    "name": item["name"],
+                    "unit_price": float(item["price"]),
+                    "quantity": quantity,
+                    "notes": notes,
+                }
             )
 
-        return "Fraud case updated successfully."
+        summary = self._cart_summary()
+        logger.info(f"Item {item_id} added to cart. Cart now: {summary}")
+        return {"ok": True, "cart": summary}
+
+    @function_tool
+    async def remove_item_from_cart(
+        self,
+        context: RunContext,
+        item_id: str,
+    ) -> dict:
+        """
+        Remove an entire line item from the cart by its item_id.
+
+        Returns:
+          Dict with ok flag, and updated cart summary.
+        """
+        original_len = len(self.cart)
+        self.cart = [entry for entry in self.cart if entry["item_id"] != item_id]
+        removed = len(self.cart) < original_len
+        summary = self._cart_summary()
+        return {"ok": removed, "cart": summary}
+
+    @function_tool
+    async def update_item_quantity(
+        self,
+        context: RunContext,
+        item_id: str,
+        quantity: int,
+    ) -> dict:
+        """
+        Update the quantity of an item in the cart.
+
+        - If quantity <= 0, the item is removed.
+        - Returns updated cart summary.
+        """
+        if quantity <= 0:
+            self.cart = [entry for entry in self.cart if entry["item_id"] != item_id]
+        else:
+            for entry in self.cart:
+                if entry["item_id"] == item_id:
+                    entry["quantity"] = quantity
+                    break
+
+        summary = self._cart_summary()
+        return {"ok": True, "cart": summary}
+
+    @function_tool
+    async def list_cart(self, context: RunContext) -> dict:
+        """
+        Return the current cart contents and total.
+        """
+        summary = self._cart_summary()
+        return summary
+
+    @function_tool
+    async def add_recipe_to_cart(
+        self,
+        context: RunContext,
+        dish: str,
+        servings: int = 1,
+    ) -> dict:
+        """
+        Add ingredients for a simple dish into the cart.
+
+        dish:
+          e.g., "peanut butter sandwich", "pasta for two"
+        servings:
+          Rough multiplier for quantity (e.g., 2 for 2 people).
+
+        Behavior:
+          - Looks up the dish in an internal recipes mapping.
+          - Adds each mapped item to the cart.
+        """
+        key = dish.strip().lower()
+        if key not in RECIPES:
+            return {
+                "ok": False,
+                "message": f"No recipe found for {dish!r}.",
+                "cart": self._cart_summary(),
+            }
+
+        multiplier = max(servings, 1)
+        for item_id in RECIPES[key]:
+            item = self._find_item_by_id(item_id)
+            if not item:
+                continue
+            base_qty = 1
+            qty = base_qty * multiplier
+            # Reuse add_item_to_cart logic
+            for entry in self.cart:
+                if entry["item_id"] == item_id:
+                    entry["quantity"] += qty
+                    break
+            else:
+                self.cart.append(
+                    {
+                        "item_id": item_id,
+                        "name": item["name"],
+                        "unit_price": float(item["price"]),
+                        "quantity": qty,
+                        "notes": f"For dish: {dish}",
+                    }
+                )
+
+        summary = self._cart_summary()
+        return {
+            "ok": True,
+            "dish": dish,
+            "cart": summary,
+        }
+
+    @function_tool
+    async def place_order(
+        self,
+        context: RunContext,
+        customer_name: str,
+        address: str,
+        notes: str = "",
+    ) -> dict:
+        """
+        Place the current order by saving it to a JSON file.
+
+        Args:
+          customer_name: Name of the customer (free text).
+          address: Delivery address (free text).
+          notes: Optional notes or instructions.
+
+        Behavior:
+          - Uses the current cart to create an order object:
+                {
+                  "order_id": "...",
+                  "timestamp": "...",
+                  "customer_name": "...",
+                  "address": "...",
+                  "notes": "...",
+                  "items": [...],
+                  "total": ...
+                }
+          - Writes to orders/order_<timestamp>.json
+          - Returns order_id and total.
+        """
+        summary = self._cart_summary()
+        if not summary["items"]:
+            return {
+                "ok": False,
+                "message": "Cart is empty, cannot place order.",
+            }
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        order_id = f"ORD_{timestamp}"
+        order_obj = {
+            "order_id": order_id,
+            "timestamp": datetime.now().isoformat(),
+            "customer_name": customer_name,
+            "address": address,
+            "notes": notes,
+            "items": summary["items"],
+            "total": summary["total"],
+        }
+
+        try:
+            out_path = ORDERS_DIR / f"order_{timestamp}.json"
+            with out_path.open("w", encoding="utf-8") as f:
+                json.dump(order_obj, f, indent=2, ensure_ascii=False)
+            logger.info(f"Order {order_id} saved to {out_path}")
+        except Exception as e:
+            logger.error(f"Failed to write order file: {e}")
+            return {
+                "ok": False,
+                "message": "Failed to save order on server side.",
+            }
+
+        # Clear cart after placing order
+        self.cart.clear()
+
+        return {
+            "ok": True,
+            "order_id": order_id,
+            "total": order_obj["total"],
+        }
 
 
 def prewarm(proc: JobProcess):
@@ -329,7 +572,7 @@ async def entrypoint(ctx: JobContext):
     # Connect to room first
     await ctx.connect()
 
-    # Voice pipeline setup (STT + LLM + TTS + turn detection)
+    # Voice pipeline setup
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
         llm=google.LLM(model="gemini-2.5-flash"),
@@ -337,16 +580,16 @@ async def entrypoint(ctx: JobContext):
             model="gemini-2.5-flash-preview-tts",
             voice_name="Zephyr",
             instructions=(
-                "Speak like a calm, professional Indian bank representative from the fraud prevention team. "
-                "Be clear, reassuring, and concise."
+                "Speak like a friendly Indian food & grocery assistant, "
+                "short and clear, like Swiggy Instamart or Blinkit support."
             ),
         ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        preemptive_generation=False,  # reduce TTS calls to help with quota
+        preemptive_generation=False,
     )
 
-    # Metrics collection (optional)
+    # Metrics collection
     usage_collector = metrics.UsageCollector()
 
     @session.on("metrics_collected")
@@ -360,25 +603,25 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(log_usage)
 
-    # Start the FraudAgent session
+    # Start the GroceryAgent session
     await session.start(
-        agent=FraudAgent(),
+        agent=GroceryAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
 
-    # Proactive opening message
+    # Initial greeting
     await session.generate_reply(
         instructions=(
-            "Introduce yourself as SecureBank's fraud prevention team. "
-            "Explain in 1–2 short sentences that there is a suspicious card transaction "
-            "and you need to verify a few details. "
-            "Then ask politely for the customer's first name to begin verification."
+            "Greet the user as QuickCart's voice assistant. "
+            "Explain in one short sentence that you can help them order groceries, snacks, "
+            "and simple meal ingredients. Then ask what they would like to order today."
         )
     )
 
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
+
